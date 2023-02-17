@@ -1937,9 +1937,6 @@ public class Wallet extends BaseTaggableObject
             if (log.isInfoEnabled())
                 log.info("Received a pending transaction {} that spends {} from our own wallet, and sends us {}",
                         tx.getTxId(), valueSentFromMe.toFriendlyString(), valueSentToMe.toFriendlyString());
-            if (tx.getConfidence().getSource().equals(TransactionConfidence.Source.UNKNOWN)) {
-                log.warn("Wallet received transaction with an unknown source. Consider tagging it!");
-            }
 
             // Clone transaction to avoid multiple wallets pointing to the same transaction. This can happen when
             // two wallets depend on the same transaction.

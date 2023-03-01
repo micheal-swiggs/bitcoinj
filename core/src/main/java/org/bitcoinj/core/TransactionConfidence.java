@@ -87,9 +87,6 @@ public class TransactionConfidence {
     // Lazily created listeners array.
     private CopyOnWriteArrayList<ListenerRegistration<Listener>> listeners;
 
-    // The depth of the transaction on the best chain in blocks. An unconfirmed block has depth 0.
-    private int depth;
-
     /** Describes the state of the transaction in general terms. Properties can be read to learn specifics. */
     public enum ConfidenceType {
         /** If BUILDING, then the transaction is included in the best chain and your confidence in it is increasing. */
@@ -139,7 +136,6 @@ public class TransactionConfidence {
     }
 
     private ConfidenceType confidenceType = ConfidenceType.UNKNOWN;
-    private int appearedAtChainHeight = -1;
     // The transaction that double spent this one, if any.
     private Transaction overridingTransaction;
 
@@ -254,9 +250,10 @@ public class TransactionConfidence {
     public synchronized int getAppearedAtChainHeight() {
         if (getConfidenceType() != ConfidenceType.BUILDING)
             throw new IllegalStateException("Confidence type is " + getConfidenceType() + ", not BUILDING");
-        return appearedAtChainHeight;
+        return TxConfidenceManager.get().appearedAtChainHeight(hash);
     }
 
+    // TODO: 2023-03-01 deprecate and update protobuf & Transaction
     /**
      * The chain height at which the transaction appeared, if it has been seen in the best chain. Automatically sets
      * the current type to {@link ConfidenceType#BUILDING} and depth to one.
@@ -264,8 +261,8 @@ public class TransactionConfidence {
     public synchronized void setAppearedAtChainHeight(int appearedAtChainHeight) {
         if (appearedAtChainHeight < 0)
             throw new IllegalArgumentException("appearedAtChainHeight out of range");
-        this.appearedAtChainHeight = appearedAtChainHeight;
-        this.depth = 1;
+        // TODO: 2023-03-01 move this out, move validation in.
+        TxConfidenceManager.get().setAppearedAtChainHeight(hash, appearedAtChainHeight);
         setConfidenceType(ConfidenceType.BUILDING);
     }
 
@@ -288,8 +285,8 @@ public class TransactionConfidence {
             overridingTransaction = null;
         }
         if (confidenceType == ConfidenceType.PENDING || confidenceType == ConfidenceType.IN_CONFLICT) {
-            depth = 0;
-            appearedAtChainHeight = -1;
+            // TODO: 2023-03-01 move this to the callers of setConfidenceType
+            TxConfidenceManager.get().removeAppearedAtChainHeight(hash);
         }
     }
 
@@ -378,6 +375,7 @@ public class TransactionConfidence {
         return builder.toString();
     }
 
+    // TODO: 2023-03-01 deprecate
     /**
      * Called by the wallet when the tx appears on the best chain and a new block is added to the top. Updates the
      * internal counter that tracks how deeply buried the block is.
@@ -385,9 +383,10 @@ public class TransactionConfidence {
      * @return the new depth
      */
     public synchronized int incrementDepthInBlocks() {
-        return ++this.depth;
+        return TxConfidenceManager.get().currentDepth(hash);
     }
 
+    // TODO: 2023-03-01 deprecate
     /**
      * <p>Depth in the chain is an approximation of how much time has elapsed since the transaction has been confirmed.
      * On average there is supposed to be a new block every 10 minutes, but the actual rate may vary. Bitcoin Core
@@ -399,14 +398,14 @@ public class TransactionConfidence {
      * the depth is zero.</p>
      */
     public synchronized int getDepthInBlocks() {
-        return depth;
+        return TxConfidenceManager.get().currentDepth(hash);
     }
 
+    // TODO: 2023-03-01 deprecate
     /*
      * Set the depth in blocks. Having one block confirmation is a depth of one.
      */
     public synchronized void setDepthInBlocks(int depth) {
-        this.depth = depth;
     }
 
     /**
@@ -445,6 +444,7 @@ public class TransactionConfidence {
         setConfidenceType(ConfidenceType.DEAD);
     }
 
+    // TODO: 2023-03-01 deprecate and remove, no usages within project
     /** Returns a copy of this object. Event listeners are not duplicated. */
     public TransactionConfidence duplicate() {
         TransactionConfidence c = new TransactionConfidence(hash);
@@ -453,7 +453,6 @@ public class TransactionConfidence {
         synchronized (this) {
             c.confidenceType = confidenceType;
             c.overridingTransaction = overridingTransaction;
-            c.appearedAtChainHeight = appearedAtChainHeight;
         }
         return c;
     }

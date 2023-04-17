@@ -4349,11 +4349,31 @@ public class Wallet extends BaseTaggableObject
 
             // If any inputs have already been added, we don't need to get their value from wallet
             Coin totalInput = Coin.ZERO;
-            for (TransactionInput input : req.tx.getInputs())
-                if (input.getConnectedOutput() != null)
-                    totalInput = totalInput.add(input.getConnectedOutput().getValue());
-                else
+            for (TransactionInput input : req.tx.getInputs()){
+
+                Coin inputValue = null;
+                if (input.getConnectedOutput() == null){
+                    for(TransactionOutput candidate: candidates){
+                        TransactionOutPoint outpoint = input.getOutpoint();
+                        Sha256Hash parentTransactionHash = candidate.getParentTransactionHash();
+                        if(Objects.equals(parentTransactionHash, outpoint.getHash()) &&
+                        candidate.getIndex() == outpoint.getIndex()){
+
+                            inputValue = candidate.getValue();
+                            break;
+                        }
+                    }
+                } else {
+                    inputValue = input.getConnectedOutput().getValue();
+                }
+
+                if (inputValue != null){
+                    totalInput = totalInput.add(inputValue);
+                } else {
+                    // TODO: 2023-04-06 is this even a good idea just throwing away coins like this?
                     log.warn("SendRequest transaction already has inputs but we don't know how much they are worth - they will be added to fee.");
+                }
+            }
             value = value.subtract(totalInput);
 
             // Check for dusty sends and the OP_RETURN limit.

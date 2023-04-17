@@ -4334,6 +4334,13 @@ public class Wallet extends BaseTaggableObject
         try {
             checkArgument(!req.completed, () ->
                     "given SendRequest has already been completed");
+
+            // Calculate a list of ALL potential candidates for spending and then ask a coin selector to provide us
+            // with the actual outputs that'll be used to gather the required amount of value. In this way, users
+            // can customize coin selection policies. The call below will ignore immature coinbases and outputs
+            // we don't have the keys for.
+            List<TransactionOutput> candidates = calculateAllSpendCandidates(true, req.missingSigsMode == MissingSigsMode.THROW);
+
             // Calculate the amount of value we need to import.
             Coin value = req.tx.getOutputSum();
 
@@ -4361,12 +4368,6 @@ public class Wallet extends BaseTaggableObject
                 if (opReturnCount > 1) // Only 1 OP_RETURN per transaction allowed.
                     throw new MultipleOpReturnRequested();
             }
-
-            // Calculate a list of ALL potential candidates for spending and then ask a coin selector to provide us
-            // with the actual outputs that'll be used to gather the required amount of value. In this way, users
-            // can customize coin selection policies. The call below will ignore immature coinbases and outputs
-            // we don't have the keys for.
-            List<TransactionOutput> candidates = calculateAllSpendCandidates(true, req.missingSigsMode == MissingSigsMode.THROW);
 
             CoinSelection bestCoinSelection;
             TransactionOutput bestChangeOutput = null;

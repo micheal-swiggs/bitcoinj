@@ -4415,7 +4415,7 @@ public class Wallet extends BaseTaggableObject
 
             // Now sign the inputs, thus proving that we are entitled to redeem the connected outputs.
             if (req.signInputs)
-                signTransaction(req);
+                signTransaction(req, candidates);
 
             // Check size.
             final int size = req.tx.bitcoinSerialize().length;
@@ -4447,7 +4447,12 @@ public class Wallet extends BaseTaggableObject
      * transaction will be complete in the end.</p>
      * @throws BadWalletEncryptionKeyException if the supplied {@link SendRequest#aesKey} is wrong.
      */
-    public void signTransaction(SendRequest req) throws BadWalletEncryptionKeyException {
+    public void signTransaction(SendRequest req) {
+        signTransaction(req, null);
+    }
+
+    public void signTransaction(SendRequest req,
+                                @Nullable List<TransactionOutput> candidates) throws BadWalletEncryptionKeyException {
         lock.lock();
         try {
             Transaction tx = req.tx;
@@ -4462,6 +4467,18 @@ public class Wallet extends BaseTaggableObject
             for (int i = 0; i < numInputs; i++) {
                 TransactionInput txIn = tx.getInput(i);
                 TransactionOutput connectedOutput = txIn.getConnectedOutput();
+                if (connectedOutput == null && candidates != null){
+
+                    for(TransactionOutput candidate: candidates){
+                        TransactionOutPoint outpoint = txIn.getOutpoint();
+                        Sha256Hash parentTransactionHash = candidate.getParentTransactionHash();
+                        if(Objects.equals(parentTransactionHash, outpoint.getHash()) &&
+                                candidate.getIndex() == outpoint.getIndex()){
+                            connectedOutput = candidate;
+                            break;
+                        }
+                    }
+                }
                 if (connectedOutput == null) {
                     // Missing connected output, assuming already signed.
                     continue;

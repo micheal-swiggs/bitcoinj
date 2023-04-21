@@ -52,10 +52,7 @@ import org.bitcoinj.crypto.MnemonicCode;
 import org.bitcoinj.crypto.MnemonicException;
 import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.crypto.internal.CryptoUtils;
-import org.bitcoinj.script.Script;
-import org.bitcoinj.script.ScriptBuilder;
-import org.bitcoinj.script.ScriptChunk;
-import org.bitcoinj.script.ScriptPattern;
+import org.bitcoinj.script.*;
 import org.bitcoinj.signers.TransactionSigner;
 import org.bitcoinj.store.BlockStoreException;
 import org.bitcoinj.store.MemoryBlockStore;
@@ -100,6 +97,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 
 import static org.bitcoinj.base.Coin.CENT;
 import static org.bitcoinj.base.Coin.COIN;
@@ -192,6 +190,7 @@ public class WalletTest extends TestWithWallet {
         // Can't verify much here as the wallet is random each time. We could fix the RNG for the unit tests and solve.
         assertEquals(12, wallet.getKeyChainSeed().getMnemonicCode().size());
     }
+
 
     @Test
     public void checkSeed() throws MnemonicException {
@@ -523,6 +522,61 @@ public class WalletTest extends TestWithWallet {
         sendMoneyToWallet(AbstractBlockChain.NewBlockType.BEST_CHAIN, t2, t3);
         assertTrue(wallet.isConsistent());
         return wallet;
+    }
+
+    @Test
+    public void replicateBug() throws Exception {
+
+        /** populate the wallet with 3 coins */
+        sendMoneyToWallet(AbstractBlockChain.NewBlockType.BEST_CHAIN, valueOf(3, 0));
+
+        /** create & serialise 50cent transaction */
+        Transaction t2 = new Transaction(TESTNET);
+        t2.addOutput(valueOf(0, 50), OTHER_ADDRESS);
+        SendRequest sendRequest = SendRequest.forTx(t2);
+        wallet.completeTx(sendRequest);
+
+        byte[] txBytes = sendRequest.tx.bitcoinSerialize();
+
+        /** deserialise transaction and call completeTx */
+        Transaction tx3 = new Transaction(TESTNET, ByteBuffer.wrap(txBytes));
+
+        isValidSignedTx(tx3, hash -> wallet.getTransaction(hash));
+
+        SendRequest sendRequest2 = SendRequest.forTx(tx3);
+        wallet.completeTx(sendRequest2);
+        assertNotNull(sendRequest2);
+
+        assertEquals(1, sendRequest2.tx.getInputs().size());
+
+
+        Transaction tx = sendRequest2.tx;
+        isValidSignedTx(tx, hash -> wallet.getTransaction(hash));
+
+        // TODO: 2023-04-06 test that it is possible to sign the transaction
+
+    }
+
+    private static boolean isValidSignedTx(Transaction tx, Function<Sha256Hash, Transaction> transactionProvider) {
+        int numInputs = tx.getInputs().size();
+        for(int i=0; i<numInputs; i++){
+            TransactionInput txIn = tx.getInputs().get(i);
+            TransactionOutput connectedOutput = txIn.getConnectedOutput();
+            if (connectedOutput == null){
+                TransactionOutPoint outpoint = txIn.getOutpoint();
+                connectedOutput = transactionProvider.apply(outpoint.getHash()).getOutput(outpoint.getIndex());
+            }
+            Coin value = connectedOutput.getValue();
+            TransactionWitness witness = txIn.getWitness();
+            Script scriptPubKey = connectedOutput.getScriptPubKey();
+            try {
+                txIn.getScriptSig().correctlySpends(tx, i, witness,value, scriptPubKey, Script.ALL_VERIFY_FLAGS);
+            } catch (ScriptException e) {
+                log.debug("Input contained an incorrect signature", e);
+                return false;
+            }
+        }
+        return true;
     }
 
     @Test

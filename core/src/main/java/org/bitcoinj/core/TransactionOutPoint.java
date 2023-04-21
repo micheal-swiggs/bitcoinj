@@ -193,6 +193,10 @@ public class TransactionOutPoint {
         TransactionOutput connectedOutput = getConnectedOutput();
         Objects.requireNonNull(connectedOutput, "Input is not connected so cannot retrieve key");
         Script connectedScript = connectedOutput.getScriptPubKey();
+        return getRedeemData(keyBag, connectedScript);
+    }
+
+    public static RedeemData getRedeemData(KeyBag keyBag, Script connectedScript) {
         if (ScriptPattern.isP2PKH(connectedScript)) {
             byte[] addressBytes = ScriptPattern.extractHashFromP2PKH(connectedScript);
             return RedeemData.of(keyBag.findKeyFromPubKeyHash(addressBytes, ScriptType.P2PKH), connectedScript);

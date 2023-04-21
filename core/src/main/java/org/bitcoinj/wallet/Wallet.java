@@ -30,41 +30,18 @@ import org.bitcoinj.base.internal.ByteUtils;
 import org.bitcoinj.base.internal.PlatformUtils;
 import org.bitcoinj.base.internal.TimeUtils;
 import org.bitcoinj.base.internal.StreamUtils;
+import org.bitcoinj.core.*;
 import org.bitcoinj.crypto.AesKey;
-import org.bitcoinj.core.AbstractBlockChain;
 import org.bitcoinj.base.Address;
 import org.bitcoinj.base.Base58;
 import org.bitcoinj.base.AddressParser;
-import org.bitcoinj.core.BlockChain;
-import org.bitcoinj.core.BloomFilter;
 import org.bitcoinj.base.Coin;
-import org.bitcoinj.core.Context;
 import org.bitcoinj.base.DefaultAddressParser;
 import org.bitcoinj.crypto.ECKey;
-import org.bitcoinj.core.FilteredBlock;
-import org.bitcoinj.core.InsufficientMoneyException;
 import org.bitcoinj.base.LegacyAddress;
-import org.bitcoinj.core.Message;
-import org.bitcoinj.core.NetworkParameters;
-import org.bitcoinj.core.Peer;
-import org.bitcoinj.core.PeerFilterProvider;
-import org.bitcoinj.core.PeerGroup;
 import org.bitcoinj.base.Sha256Hash;
-import org.bitcoinj.core.StoredBlock;
-import org.bitcoinj.core.Transaction;
-import org.bitcoinj.core.TransactionBag;
-import org.bitcoinj.core.TransactionBroadcast;
-import org.bitcoinj.core.TransactionBroadcaster;
-import org.bitcoinj.core.TransactionConfidence;
 import org.bitcoinj.core.TransactionConfidence.ConfidenceType;
 import org.bitcoinj.core.TransactionConfidence.Listener;
-import org.bitcoinj.core.TransactionInput;
-import org.bitcoinj.core.TransactionOutPoint;
-import org.bitcoinj.core.TransactionOutput;
-import org.bitcoinj.core.UTXO;
-import org.bitcoinj.core.UTXOProvider;
-import org.bitcoinj.core.UTXOProviderException;
-import org.bitcoinj.core.VerificationException;
 import org.bitcoinj.core.listeners.NewBestBlockListener;
 import org.bitcoinj.core.listeners.ReorganizeListener;
 import org.bitcoinj.core.listeners.TransactionConfidenceEventListener;
@@ -4543,6 +4520,13 @@ public class Wallet extends BaseTaggableObject
         try {
             checkArgument(!req.completed, () ->
                     "given SendRequest has already been completed");
+
+            // Calculate a list of ALL potential candidates for spending and then ask a coin selector to provide us
+            // with the actual outputs that'll be used to gather the required amount of value. In this way, users
+            // can customize coin selection policies. The call below will ignore immature coinbases and outputs
+            // we don't have the keys for.
+            List<TransactionOutput> candidates = calculateAllSpendCandidates(true, req.missingSigsMode == MissingSigsMode.THROW);
+
             // Calculate the amount of value we need to import.
             Coin value = req.tx.getOutputSum();
 
@@ -4551,11 +4535,31 @@ public class Wallet extends BaseTaggableObject
 
             // If any inputs have already been added, we don't need to get their value from wallet
             Coin totalInput = Coin.ZERO;
-            for (TransactionInput input : req.tx.getInputs())
-                if (input.getConnectedOutput() != null)
-                    totalInput = totalInput.add(input.getConnectedOutput().getValue());
-                else
+            for (TransactionInput input : req.tx.getInputs()){
+
+                Coin inputValue = null;
+                if (input.getConnectedOutput() == null){
+                    for(TransactionOutput candidate: candidates){
+                        TransactionOutPoint outpoint = input.getOutpoint();
+                        Sha256Hash parentTransactionHash = candidate.getParentTransactionHash();
+                        if(Objects.equals(parentTransactionHash, outpoint.getHash()) &&
+                        candidate.getIndex() == outpoint.getIndex()){
+
+                            inputValue = candidate.getValue();
+                            break;
+                        }
+                    }
+                } else {
+                    inputValue = input.getConnectedOutput().getValue();
+                }
+
+                if (inputValue != null){
+                    totalInput = totalInput.add(inputValue);
+                } else {
+                    // TODO: 2023-04-06 is this even a good idea just throwing away coins like this?
                     log.warn("SendRequest transaction already has inputs but we don't know how much they are worth - they will be added to fee.");
+                }
+            }
             value = value.subtract(totalInput);
 
             // Check for dusty sends and the OP_RETURN limit.
@@ -4570,12 +4574,6 @@ public class Wallet extends BaseTaggableObject
                 if (opReturnCount > 1) // Only 1 OP_RETURN per transaction allowed.
                     throw new MultipleOpReturnRequested();
             }
-
-            // Calculate a list of ALL potential candidates for spending and then ask a coin selector to provide us
-            // with the actual outputs that'll be used to gather the required amount of value. In this way, users
-            // can customize coin selection policies. The call below will ignore immature coinbases and outputs
-            // we don't have the keys for.
-            List<TransactionOutput> candidates = calculateAllSpendCandidates(true, req.missingSigsMode == MissingSigsMode.THROW);
 
             CoinSelection bestCoinSelection;
             TransactionOutput bestChangeOutput = null;
@@ -4623,7 +4621,7 @@ public class Wallet extends BaseTaggableObject
 
             // Now sign the inputs, thus proving that we are entitled to redeem the connected outputs.
             if (req.signInputs)
-                signTransaction(req);
+                signTransaction(req, candidates);
 
             // Check size.
             final int size = req.tx.serialize().length;
@@ -4655,7 +4653,12 @@ public class Wallet extends BaseTaggableObject
      * transaction will be complete in the end.</p>
      * @throws BadWalletEncryptionKeyException if the supplied {@link SendRequest#aesKey} is wrong.
      */
-    public void signTransaction(SendRequest req) throws BadWalletEncryptionKeyException {
+    public void signTransaction(SendRequest req) {
+        signTransaction(req, null);
+    }
+
+    public void signTransaction(SendRequest req,
+                                @Nullable List<TransactionOutput> candidates) throws BadWalletEncryptionKeyException {
         lock.lock();
         try {
             Transaction tx = req.tx;
@@ -4670,6 +4673,18 @@ public class Wallet extends BaseTaggableObject
             for (int i = 0; i < numInputs; i++) {
                 TransactionInput txIn = tx.getInput(i);
                 TransactionOutput connectedOutput = txIn.getConnectedOutput();
+                if (connectedOutput == null && candidates != null){
+
+                    for(TransactionOutput candidate: candidates){
+                        TransactionOutPoint outpoint = txIn.getOutpoint();
+                        Sha256Hash parentTransactionHash = candidate.getParentTransactionHash();
+                        if(Objects.equals(parentTransactionHash, outpoint.getHash()) &&
+                                candidate.getIndex() == outpoint.getIndex()){
+                            connectedOutput = candidate;
+                            break;
+                        }
+                    }
+                }
                 if (connectedOutput == null) {
                     // Missing connected output, assuming already signed.
                     continue;
@@ -4680,8 +4695,12 @@ public class Wallet extends BaseTaggableObject
                     // We assume if its already signed, its hopefully got a SIGHASH type that will not invalidate when
                     // we sign missing pieces (to check this would require either assuming any signatures are signing
                     // standard output types or a way to get processed signatures out of script execution)
-                    txIn.getScriptSig().correctlySpends(tx, i, txIn.getWitness(), connectedOutput.getValue(),
-                            connectedOutput.getScriptPubKey(), Script.ALL_VERIFY_FLAGS);
+                    Coin value = connectedOutput.getValue();
+                    TransactionWitness witness = txIn.getWitness();
+                    Script scriptPubKey1 = connectedOutput.getScriptPubKey();
+                    Script scriptSig = txIn.getScriptSig();
+                    scriptSig.correctlySpends(tx, i, witness, value,
+                            scriptPubKey1, Script.ALL_VERIFY_FLAGS);
                     log.warn("Input {} already correctly spends output, assuming SIGHASH type used will be safe and skipping signing.", i);
                     continue;
                 } catch (ScriptException e) {
@@ -4689,7 +4708,7 @@ public class Wallet extends BaseTaggableObject
                     // Expected.
                 }
 
-                RedeemData redeemData = txIn.getConnectedRedeemData(maybeDecryptingKeyBag);
+                RedeemData redeemData = TransactionOutPoint.getRedeemData(maybeDecryptingKeyBag, connectedOutput.getScriptPubKey());
                 Objects.requireNonNull(redeemData, () ->
                         "Transaction exists in wallet that we cannot redeem: " + txIn.getOutpoint().hash());
                 txIn.setScriptSig(scriptPubKey.createEmptyInputScript(redeemData.keys.get(0), redeemData.redeemScript));
